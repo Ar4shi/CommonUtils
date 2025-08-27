@@ -26,7 +26,7 @@ import java.util.regex.Pattern;
  */
 public class BatchModifyImageTime {
 
-    public static void modifyCreationTime(String folderPath, LocalDateTime startTime, SortType sortType) {
+    public static void modifyCreationTime(String folderPath, LocalDateTime startTime, NameType nameType, SortType sortType) {
         File folder = new File(folderPath);
         if (!folder.exists() || !folder.isDirectory()) {
             System.out.println("指定的文件夹不存在或不是一个有效的文件夹。");
@@ -34,7 +34,7 @@ public class BatchModifyImageTime {
         }
 
         // 获取文件夹中的所有图片文件
-        List<File> imageFiles = getImageFiles(folder, sortType);
+        List<File> imageFiles = getImageFiles(folder, nameType, sortType);
 
         // 循环处理每张图片
         for (int i = 0; i < imageFiles.size(); i++) {
@@ -129,11 +129,11 @@ public class BatchModifyImageTime {
         }
     }
 
-    public static List<File> getImageFiles(File folder, SortType sortType) {
+    public static List<File> getImageFiles(File folder, NameType nameType, SortType sortType) {
         List<File> imageFiles = new ArrayList<>();
         File[] files = folder.listFiles();
         if (files != null) {
-            fileSort(files, sortType);
+            fileSort(files, nameType, sortType);
             for (File file : files) {
                 if (file.isFile()) {
                     String fileName = file.getName().toLowerCase();
@@ -146,35 +146,35 @@ public class BatchModifyImageTime {
         return imageFiles;
     }
 
-    private static void fileSort(File[] files, SortType sortType) {
-        if (SortType.POST_PARENTHESES == sortType) {
+    private static void fileSort(File[] files, NameType nameType, SortType sortType) {
+        if (NameType.POST_PARENTHESES == nameType) {
             Arrays.sort(files, Comparator.comparing(file -> {
                 String fileName = file.getName();
                 int startIndex = fileName.lastIndexOf('(') + 1;
                 int endIndex = fileName.lastIndexOf(')');
-                return Integer.parseInt(fileName.substring(startIndex, endIndex));
+                return Integer.parseInt(fileName.substring(startIndex, endIndex)) * (SortType.SEQUENTIAL.equals(sortType) ? 1 : -1);
             }));
-        } else if (SortType.RRE_UNDERLINE == sortType) {
+        } else if (NameType.RRE_UNDERLINE == nameType) {
             Arrays.sort(files, Comparator.comparing(file -> {
                 String fileName = file.getName();
                 int startIndex = 0;
                 int endIndex = fileName.indexOf('_');
-                return Integer.parseInt(fileName.substring(startIndex, endIndex));
+                return Integer.parseInt(fileName.substring(startIndex, endIndex)) * (SortType.SEQUENTIAL.equals(sortType) ? 1 : -1);
             }));
-        } else if (SortType.TIMESTAMP_14 == sortType) {
+        } else if (NameType.TIMESTAMP_14 == nameType) {
             // 新增：14位时间戳排序逻辑
             Arrays.sort(files, Comparator.comparing(file -> {
                 String fileName = file.getName();
                 // 使用正则匹配连续14位数字
                 Matcher matcher = Pattern.compile("\\d{14}").matcher(fileName);
                 if (matcher.find()) {
-                    return Long.parseLong(matcher.group()); // 转换为长整型
+                    return Long.parseLong(matcher.group()) * (SortType.SEQUENTIAL.equals(sortType) ? 1 : -1);
                 } else {
                     // 未找到时按文件名自然排序（或抛异常）
                     return 0L; // 或 throw new IllegalArgumentException("无效文件名: " + fileName);
                 }
             }));
-        }else if (SortType.DATE_STRING_SEQ == sortType) { // 新增排序类型
+        }else if (NameType.DATE_STRING_SEQ == nameType) { // 新增排序类型
             Arrays.sort(files, Comparator.comparing(file -> {
                 String fileName = file.getName();
                 // 提取最后一个下划线后的数字部分（如0001）
@@ -187,7 +187,7 @@ public class BatchModifyImageTime {
                 }
 
                 String seqPart = fileName.substring(lastUnderscore + 1, dotIndex);
-                return Integer.parseInt(seqPart); // 直接转换为整数
+                return Integer.parseInt(seqPart) * (SortType.SEQUENTIAL.equals(sortType) ? 1 : -1);
             }));
         }
     }
