@@ -26,43 +26,47 @@ import java.util.regex.Pattern;
  */
 public class BatchModifyImageTime {
 
-    public static void modifyCreationTime(String folderPath, LocalDateTime startTime, NameType nameType, SortType sortType) {
-        File folder = new File(folderPath);
+    public static void modifyCreationTime(ModificationOptions options) {
+        File folder = new File(options.getFolderPath());
         if (!folder.exists() || !folder.isDirectory()) {
             System.out.println("指定的文件夹不存在或不是一个有效的文件夹。");
             return;
         }
 
         // 获取文件夹中的所有图片文件
-        List<File> imageFiles = getImageFiles(folder, nameType, sortType);
+        List<File> imageFiles = getImageFiles(folder, options.getNameType(), options.getSortType());
 
         // 循环处理每张图片
         for (int i = 0; i < imageFiles.size(); i++) {
             File imageFile = imageFiles.get(i);
             // 计算当前图片的创建时间，每次递增 1 分钟
-            LocalDateTime currentTime = startTime.plusMinutes(i);
+            LocalDateTime currentTime = options.getStartTime().plusMinutes(i);
             // 将 LocalDateTime 转换为 Instant
             Instant instant = currentTime.toInstant(ZoneOffset.UTC);
             // 创建 FileTime 对象
             FileTime fileTime = FileTime.from(instant);
 
             // 1. 移除EXIF元数据
-            try {
-                removeAllMetadata(imageFile);
-                System.out.println("已移除EXIF元数据: " + imageFile.getName());
-            }catch (Exception e) {
-                System.out.println("处理文件 " + imageFile.getName() + " 时出错: " + e.getMessage());
+            if (options.getRemoveMetadata()) {
+                try {
+                    removeAllMetadata(imageFile);
+                    System.out.println("已移除EXIF元数据: " + imageFile.getName());
+                } catch (Exception e) {
+                    System.out.println("处理文件 " + imageFile.getName() + " 时出错: " + e.getMessage());
+                }
             }
 
             // 1. 修改MD5：向文件末尾追加随机字节
-            try (FileOutputStream fos = new FileOutputStream(imageFile, true)) {
-                byte[] randomByte = new byte[1];
-                ThreadLocalRandom.current().nextBytes(randomByte); // 生成1个随机字节
-                fos.write(randomByte); // 追加到文件末尾
-                System.out.println("已向文件追加随机字节，新MD5将变化: " + imageFile.getName());
-            } catch (IOException e) {
-                System.out.println("修改文件内容时出错: " + e.getMessage());
-                continue; // 跳过当前文件，继续处理下一个
+            if (options.getModifyMD5()) {
+                try (FileOutputStream fos = new FileOutputStream(imageFile, true)) {
+                    byte[] randomByte = new byte[1];
+                    ThreadLocalRandom.current().nextBytes(randomByte); // 生成1个随机字节
+                    fos.write(randomByte); // 追加到文件末尾
+                    System.out.println("已向文件追加随机字节，新MD5将变化: " + imageFile.getName());
+                } catch (IOException e) {
+                    System.out.println("修改文件内容时出错: " + e.getMessage());
+                    continue; // 跳过当前文件，继续处理下一个
+                }
             }
 
             try {
@@ -137,7 +141,7 @@ public class BatchModifyImageTime {
             for (File file : files) {
                 if (file.isFile()) {
                     String fileName = file.getName().toLowerCase();
-                    if (fileName.endsWith(".png") || fileName.endsWith(".jpg")) {
+                    if (fileName.endsWith(".png") || fileName.endsWith(".jpg") || fileName.endsWith(".gif")) {
                         imageFiles.add(file);
                     }
                 }
@@ -153,6 +157,12 @@ public class BatchModifyImageTime {
                 int startIndex = fileName.lastIndexOf('(') + 1;
                 int endIndex = fileName.lastIndexOf(')');
                 return Integer.parseInt(fileName.substring(startIndex, endIndex)) * (SortType.SEQUENTIAL.equals(sortType) ? 1 : -1);
+            }));
+        } else if (NameType.NUMBER == nameType) {
+            Arrays.sort(files, Comparator.comparing(file -> {
+                String fileName = file.getName();
+                int endIndex = fileName.lastIndexOf('.');
+                return Integer.parseInt(fileName.substring(0, endIndex)) * (SortType.SEQUENTIAL.equals(sortType) ? 1 : -1);
             }));
         } else if (NameType.RRE_UNDERLINE == nameType) {
             Arrays.sort(files, Comparator.comparing(file -> {
@@ -174,7 +184,7 @@ public class BatchModifyImageTime {
                     return 0L; // 或 throw new IllegalArgumentException("无效文件名: " + fileName);
                 }
             }));
-        }else if (NameType.DATE_STRING_SEQ == nameType) { // 新增排序类型
+        } else if (NameType.DATE_STRING_SEQ == nameType) { // 新增排序类型
             Arrays.sort(files, Comparator.comparing(file -> {
                 String fileName = file.getName();
                 // 提取最后一个下划线后的数字部分（如0001）
@@ -189,6 +199,45 @@ public class BatchModifyImageTime {
                 String seqPart = fileName.substring(lastUnderscore + 1, dotIndex);
                 return Integer.parseInt(seqPart) * (SortType.SEQUENTIAL.equals(sortType) ? 1 : -1);
             }));
+        } else if (NameType.PREFIX_IN_PARENTHESES == nameType) { // 【新增的 else if 分支】
+            // 使用一个自定义的、支持多级比较的 Comparator
+            Arrays.sort(files, (file1, file2) -> {
+                String name1 = file1.getName();
+                String name2 = file2.getName();
+
+                // --- 解析 file1 ---
+                int p1Start = name1.lastIndexOf('(');
+                int p1End = name1.lastIndexOf(')');
+                // 找到括号前的前缀，注意要包含前面的空格以便后续处理
+                String prefix1 = name1.substring(0, p1Start).trim();
+                int num1 = Integer.parseInt(name1.substring(p1Start + 1, p1End));
+
+                // --- 解析 file2 ---
+                int p2Start = name2.lastIndexOf('(');
+                int p2End = name2.lastIndexOf(')');
+                String prefix2 = name2.substring(0, p2Start).trim();
+                int num2 = Integer.parseInt(name2.substring(p2Start + 1, p2End));
+
+                // --- 多级比较逻辑 ---
+                // 1. 先比较括号前的部分 (主排序键)
+                int prefixCompare = prefix1.compareTo(prefix2);
+                if (prefixCompare != 0) {
+                    return prefixCompare; // 如果前缀不同，直接返回比较结果
+                }
+
+                // 2. 如果前缀相同，再比较括号里的数字 (次排序键)
+                return Integer.compare(num1, num2);
+            });
+            // 【重要】在排序完成后，单独处理逆序逻辑
+            // 因为上面的自定义比较器没有简单的方法直接乘以 -1
+            if (SortType.REVERSE.equals(sortType)) {
+                // 将数组反转
+                for (int i = 0; i < files.length / 2; i++) {
+                    File temp = files[i];
+                    files[i] = files[files.length - 1 - i];
+                    files[files.length - 1 - i] = temp;
+                }
+            }
         }
     }
 }

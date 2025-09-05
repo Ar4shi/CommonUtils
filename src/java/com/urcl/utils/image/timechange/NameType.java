@@ -3,6 +3,11 @@ package com.urcl.utils.image.timechange;
 public enum NameType {
 
     /**
+     * 纯数字 形如 123456
+     */
+    NUMBER,
+
+    /**
      * 前下划线,形如 123_xxx_xx_xxx.png
      */
     RRE_UNDERLINE,
@@ -19,5 +24,9 @@ public enum NameType {
     /**
      * 形如 20250731_xxx_0001.jpg
      */
-    DATE_STRING_SEQ
+    DATE_STRING_SEQ,
+    /**
+     * 例如：0 (1).jpg, 1-1 (10).jpg
+     */
+    PREFIX_IN_PARENTHESES
 }
