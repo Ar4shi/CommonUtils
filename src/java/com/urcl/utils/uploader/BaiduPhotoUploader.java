@@ -1,18 +1,35 @@
 package com.urcl.utils.uploader;
 
 import com.urcl.utils.uploader.clients.BaiduPhotoApiClient;
+import com.urcl.utils.uploader.model.AlbumInfo;
 import com.urcl.utils.uploader.model.CreateAlbumResponse;
 import com.urcl.utils.uploader.model.CreateResponse;
 import com.urcl.utils.uploader.model.PrecreateResponse;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
 
 public class BaiduPhotoUploader {
+
+    // [可配置] 一次并行上传多少个文件夹的图片
+    private static final int BATCH_SIZE = 5;
+
+    // [可配置] 设置创建每个相册之间的间隔时间（毫秒），2秒是一个比较安全的值
+    private static final int CREATE_ALBUM_INTERVAL_MS = 500;
+    /**
+     * 文件上传间隔
+     */
+    public static final int UPDATE_FILE_INTERVAL_MS = 10;
 
     public void batchUpload(String root_folder_path, String bdstoken, String cookie) {
         File rootFolder = new File(root_folder_path);
@@ -21,139 +38,175 @@ public class BaiduPhotoUploader {
             return;
         }
 
-        File[] subFolders = rootFolder.listFiles(File::isDirectory);
+        File[] subFolders = rootFolder.listFiles(f -> f.isDirectory() && !f.getName().startsWith("[Finished]"));
+
         if (subFolders == null || subFolders.length == 0) {
-            System.out.println("在根目录中没有找到任何子文件夹。");
+            System.out.println("在根目录中没有找到需要处理的子文件夹。");
             return;
         }
 
-        System.out.println("发现 " + subFolders.length + " 个子文件夹，将为每一个创建一个相册并上传照片...");
+        List<File> subFolderList = Arrays.asList(subFolders);
+        System.out.println("发现 " + subFolderList.size() + " 个待处理文件夹，将以每批 " + BATCH_SIZE + " 个进行处理...");
 
-        BaiduPhotoApiClient apiClient = new BaiduPhotoApiClient(cookie, bdstoken);
+        // apiClient 仅用于串行创建相册
+        BaiduPhotoApiClient mainApiClient = new BaiduPhotoApiClient(cookie, bdstoken);
+        // 线程池用于并行的文件上传任务
+        ExecutorService executor = Executors.newFixedThreadPool(BATCH_SIZE);
 
-        for (File folder : subFolders) {
-            System.out.println("\n=======================================================");
-            System.out.println("====== 开始处理文件夹: " + folder.getName() + " ======");
-            System.out.println("=======================================================");
+        for (int i = 0; i < subFolderList.size(); i += BATCH_SIZE) {
+            List<File> batch = subFolderList.subList(i, Math.min(i + BATCH_SIZE, subFolderList.size()));
 
-            try {
-                processAlbumFolder(apiClient, folder);
-            } catch (Exception e) {
-                System.err.println("!!! 处理文件夹 " + folder.getName() + " 时发生严重错误: " + e.getMessage());
+            System.out.printf("\n======================= 开始处理批次 %d / %d =======================\n",
+                    (i / BATCH_SIZE + 1), (int) Math.ceil((double) subFolderList.size() / BATCH_SIZE));
+
+            // =======================================================================
+            // 步骤 1: 【串行】创建当前批次的所有相册，并设置间隔
+            // =======================================================================
+            System.out.println("\n======== [批次 " + (i / BATCH_SIZE + 1) + "] 步骤 1: 串行创建相册 ========");
+            List<AlbumInfo> createdAlbums = new ArrayList<>();
+            for (File folder : batch) {
+                String albumTitle = folder.getName();
+                System.out.println("\n>>> 准备创建相册: " + albumTitle);
+                try {
+                    CreateAlbumResponse albumResponse = mainApiClient.createAlbum(albumTitle);
+                    String newAlbumId = albumResponse.getAlbumId();
+                    String newTid = albumResponse.getInfo().getTid();
+
+                    if (newAlbumId == null || newAlbumId.isEmpty() || newTid == null || newTid.isEmpty()) {
+                        System.err.println("!!! 创建相册 '" + albumTitle + "' 失败: 未能获取到有效的album_id或tid。");
+                        continue;
+                    }
+
+                    System.out.println("  -> 成功创建相册! 相册ID: " + newAlbumId);
+                    createdAlbums.add(new AlbumInfo(newAlbumId, newTid, folder));
+
+                    System.out.println("  -> 等待 " + CREATE_ALBUM_INTERVAL_MS / 1000 + " 秒...");
+                    Thread.sleep(CREATE_ALBUM_INTERVAL_MS);
+
+                } catch (Exception e) {
+                    System.err.println("!!! 创建相册 '" + albumTitle + "' 时发生严重错误: " + e.getMessage());
+                }
             }
 
-            try {
-                System.out.println("====== 文件夹 '" + folder.getName() + "' 处理完毕，暂停3秒... ======");
-                Thread.sleep(3000); // 每个相册处理完后，暂停3秒
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+            if (createdAlbums.isEmpty()) {
+                System.out.println("\n本批次没有成功创建任何相册，跳至下一批。");
+                continue;
             }
+
+            // =======================================================================
+            // 步骤 2: 【并行】将文件上传任务提交到线程池
+            // =======================================================================
+            System.out.println("\n======== [批次 " + (i / BATCH_SIZE + 1) + "] 步骤 2: 并行上传文件到已创建的相册中 ========");
+            List<CompletableFuture<Void>> uploadFutures = createdAlbums.stream()
+                    .map(albumInfo -> CompletableFuture.runAsync(() -> {
+                        processFilesForAlbum(new BaiduPhotoApiClient(cookie, bdstoken), albumInfo);
+                    }, executor))
+                    .collect(Collectors.toList());
+
+            CompletableFuture.allOf(uploadFutures.toArray(new CompletableFuture[0])).join();
+            System.out.println("\n======== [批次 " + (i / BATCH_SIZE + 1) + "] 文件上传任务已全部完成 ========");
         }
 
-        System.out.println("\n\n所有文件夹处理完毕！");
+        executor.shutdown();
+        System.out.println("\n\n所有批次处理完毕！");
     }
 
-    /**
-     * [已更新] 处理单个子文件夹：创建相册 -> 上传所有图片 -> 批量添加到相册
-     */
-    private void processAlbumFolder(BaiduPhotoApiClient apiClient, File folder) {
-        String albumTitle = folder.getName();
-        int successCount = 0;
-        List<Long> uploadedFsids = new ArrayList<>(); // 用于收集上传成功的fsid
+    private void processFilesForAlbum(BaiduPhotoApiClient apiClient, AlbumInfo albumInfo) {
+        String albumTitle = albumInfo.getFolder().getName();
+        long threadId = Thread.currentThread().getId();
+        System.out.printf("====== [线程 %d] 开始上传照片到相册: %s ======\n", threadId, albumTitle);
 
-        File[] filesToUpload = folder.listFiles((dir, name) ->
-                name.toLowerCase().endsWith(".jpg") ||
-                        name.toLowerCase().endsWith(".jpeg") ||
-                        name.toLowerCase().endsWith(".png"));
+        int successCount = 0;
+        List<Long> uploadedFsids = new ArrayList<>();
+
+        File[] filesToUpload = albumInfo.getFolder().listFiles((dir, name) ->
+                name.toLowerCase().endsWith(".jpg") || name.toLowerCase().endsWith(".jpeg") || name.toLowerCase().endsWith(".png"));
 
         if (filesToUpload == null || filesToUpload.length == 0) {
-            System.out.println("文件夹 '" + albumTitle + "' 中没有找到图片文件，跳过。");
+            System.out.printf("[线程 %d] 文件夹 '%s' 中没有图片，跳过上传。\n", threadId, albumTitle);
+            renameFolderToFinished(albumInfo.getFolder());
             return;
         }
 
         List<File> fileList = new ArrayList<>(Arrays.asList(filesToUpload));
         fileList.sort(Comparator.comparingLong(File::lastModified));
-        System.out.println("发现 " + fileList.size() + " 张图片，已按日期排序。");
+        System.out.printf("[线程 %d] 发现 %d 张图片，已按日期排序。\n", threadId, fileList.size());
 
         try {
-            // 步骤 0: 创建相册
-            System.out.println("\n======== 步骤 0: 创建新相册 '" + albumTitle + "' ========");
-            CreateAlbumResponse albumResponse = apiClient.createAlbum(albumTitle);
-            String newAlbumId = albumResponse.getAlbumId();
-            String newTid = albumResponse.getInfo().getTid();
-            System.out.println("  -> 成功创建相册! 相册ID: " + newAlbumId + ", TID: " + newTid);
-
-            if (newAlbumId == null || newAlbumId.isEmpty() || newTid == null || newTid.isEmpty()) {
-                throw new IOException("未能从创建相册的响应中获取有效的 album_id 或 tid。");
-            }
-
-            // 循环上传文件，并收集fsid
             for (File file : fileList) {
-                System.out.println("\n----------------------------------------------------");
-                System.out.println(">>> 正在上传文件: " + file.getName());
+                System.out.printf("\n>>> [线程 %d] 正在上传文件: %s\n", threadId, file.getName());
                 try {
-                    long fsid = uploadSingleFileAndGetFsid(apiClient, file, newAlbumId);
+                    long fsid = uploadSingleFileAndGetFsid(apiClient, file, albumInfo.getAlbumId());
                     uploadedFsids.add(fsid);
                     successCount++;
                 } catch (Exception e) {
-                    System.err.println("!!! 上传文件 " + file.getName() + " 失败: " + e.getMessage());
+                    System.err.printf("!!! [线程 %d] 上传文件 %s 失败: %s\n", threadId, file.getName(), e.getMessage());
                 }
-                // Thread.sleep(500);
+                Thread.sleep(UPDATE_FILE_INTERVAL_MS); // 文件间短暂停顿
             }
 
-            // 步骤 4: 所有文件上传完成后，批量添加到相册
             if (!uploadedFsids.isEmpty()) {
-                System.out.println("\n----------------------------------------------------");
-                System.out.println(">>> 所有文件上传完成，正在将 " + uploadedFsids.size() + " 个文件批量添加到相册...");
-                apiClient.addFilesToAlbum(newAlbumId, uploadedFsids, newTid);
-                System.out.println("  -> 批量添加成功!");
+                System.out.printf("\n>>> [线程 %d] 所有文件上传完成，正在将 %d 个文件批量添加到相册...\n", threadId, uploadedFsids.size());
+                apiClient.addFilesToAlbum(albumInfo.getAlbumId(), uploadedFsids, albumInfo.getTid());
+                System.out.printf("  -> [线程 %d] 批量添加成功!\n", threadId);
             }
+
+            renameFolderToFinished(albumInfo.getFolder());
 
         } catch (Exception e) {
-            System.err.println("!!! 处理相册 '" + albumTitle + "' 失败: " + e.getMessage());
+            System.err.printf("!!! [线程 %d] 处理相册 '%s' 的文件时失败: %s\n", threadId, albumTitle, e.getMessage());
         }
 
-        System.out.println("\n文件夹 '" + albumTitle + "' 处理完毕！成功上传: " + successCount + " / " + fileList.size());
+        System.out.printf("\n====== [线程 %d] 相册 '%s' 处理完毕！成功上传: %d / %d ======\n", threadId, albumTitle, successCount, fileList.size());
     }
 
-    /**
-     * [已更新] 上传单个文件并返回fsid，去掉了添加到相册的步骤
-     */
     private long uploadSingleFileAndGetFsid(BaiduPhotoApiClient apiClient, File file, String albumId) throws IOException {
         String remotePath = "/" + file.getName();
         long fsid;
+        long threadId = Thread.currentThread().getId();
 
-        // 步骤 1: 预创建
-        System.out.println("  [1/3] 正在预创建...");
+        System.out.printf("  [%d] [1/3] 正在预创建...\n", threadId);
         PrecreateResponse precreateResponse = apiClient.precreate(file, remotePath, albumId);
 
         if (precreateResponse.isSecondPass()) {
             fsid = precreateResponse.getFsId();
-            System.out.println("  -> 文件已存在 (秒传成功)! FSID: " + fsid);
+            System.out.printf("  -> [%d] 文件已存在 (秒传成功)! FSID: %d\n", threadId, fsid);
         } else if (precreateResponse.isUploadNeeded()) {
             String uploadId = precreateResponse.getUploadid();
-            System.out.println("  -> 获取到 UploadID: " + uploadId);
+            System.out.printf("  -> [%d] 获取到 UploadID: %s\n", threadId, uploadId);
 
-            // 步骤 2: 上传数据
-            System.out.println("  [2/3] 正在上传文件数据...");
+            System.out.printf("  [%d] [2/3] 正在上传文件数据...\n", threadId);
             apiClient.uploadPart(file, remotePath, uploadId);
-            System.out.println("  -> 文件数据上传完成。");
+            System.out.printf("  -> [%d] 文件数据上传完成。\n", threadId);
 
-            // 步骤 3: 创建文件记录
-            System.out.println("  [3/3] 正在创建文件记录...");
+            System.out.printf("  [%d] [3/3] 正在创建文件记录...\n", threadId);
             CreateResponse createResponse = apiClient.createFile(file, remotePath, uploadId, albumId);
             if (createResponse.getErrno() != 0 || createResponse.getData() == null) {
                 throw new IOException("创建文件记录失败，错误码: " + createResponse.getErrno());
             }
             fsid = createResponse.getData().getFsid();
-            System.out.println("  -> 文件记录创建成功! FSID: " + fsid);
-        } else if (precreateResponse.getErrno() == 0) {
+            System.out.printf("  -> [%d] 文件记录创建成功! FSID: %d\n", threadId, fsid);
+        } else if (precreateResponse.getErrno() == 0 && precreateResponse.getFsId() != null) {
             fsid = precreateResponse.getFsId();
-            System.out.println("  -> 文件已存在 (秒传成功)! FSID: " + fsid);
+            System.out.printf("  -> [%d] 文件已存在 (秒传成功)! FSID: %d\n", threadId, fsid);
         } else {
             throw new IOException("预创建失败，错误码: " + precreateResponse.getErrno());
         }
-
         return fsid;
+    }
+
+    private void renameFolderToFinished(File folder) {
+        try {
+            if (folder.getName().startsWith("[Finished]")) {
+                return;
+            }
+            // 使用 java.nio.file.Path 来处理路径，更健壮
+            java.nio.file.Path sourcePath = folder.toPath();
+            java.nio.file.Path destPath = new File(folder.getParent(), "[Finished] " + folder.getName()).toPath();
+            Files.move(sourcePath, destPath, StandardCopyOption.REPLACE_EXISTING);
+            System.out.printf("  -> [线程 %d] 已成功将文件夹重命名为: %s\n", Thread.currentThread().getId(), destPath.getFileName());
+        } catch (IOException e) {
+            System.err.printf("!!! [线程 %d] 重命名文件夹 %s 失败: %s\n", Thread.currentThread().getId(), folder.getName(), e.getMessage());
+        }
     }
 }

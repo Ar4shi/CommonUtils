@@ -6,17 +6,9 @@ import com.google.gson.JsonObject;
 import com.urcl.utils.uploader.model.AddFileResponse;
 import com.urcl.utils.uploader.model.CreateAlbumResponse;
 import com.urcl.utils.uploader.model.CreateResponse;
-import com.urcl.utils.uploader.model.ListFileResponse;
 import com.urcl.utils.uploader.model.PrecreateResponse;
 import com.urcl.utils.uploader.utils.Utils;
-import okhttp3.FormBody;
-import okhttp3.HttpUrl;
-import okhttp3.MediaType;
-import okhttp3.MultipartBody;
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.RequestBody;
-import okhttp3.Response;
+import okhttp3.*;
 
 import java.io.File;
 import java.io.IOException;
@@ -62,9 +54,10 @@ public class BaiduPhotoApiClient {
                 .addQueryParameter("bdstoken", this.bdstoken)
                 .addQueryParameter("title", albumTitle)
                 .addQueryParameter("source", "0")
-                .addQueryParameter("tid", String.valueOf(System.currentTimeMillis())) // 这个tid看起来是时间戳
+                .addQueryParameter("tid", String.valueOf(System.currentTimeMillis()))
                 .build();
 
+        // 创建相册时的Referer是相册主列表
         Request request = buildRequest(url, null, "https://photo.baidu.com/photo/web/album");
 
         try (Response response = httpClient.newCall(request).execute()) {
@@ -109,6 +102,7 @@ public class BaiduPhotoApiClient {
                 .addQueryParameter("bdstoken", this.bdstoken)
                 .build();
 
+        // Referer需要带上当前操作的相册ID
         Request request = buildRequest(url, formBody, "https://photo.baidu.com/photo/web/album/" + albumId);
 
         try (Response response = httpClient.newCall(request).execute()) {
@@ -186,14 +180,14 @@ public class BaiduPhotoApiClient {
     }
 
     /**
-     * 步骤 4: [已更新] 将一批文件批量添加到相册
+     * 步骤 4: 将一批文件批量添加到相册
      * @param albumId 目标相册ID
      * @param fsids   要添加的文件的fsid列表
      * @param tid     有效的事务ID
      */
     public void addFilesToAlbum(String albumId, List<Long> fsids, String tid) throws IOException {
         if (fsids == null || fsids.isEmpty()) {
-            return; // 如果没有文件需要添加，直接返回
+            return;
         }
 
         JsonArray listArray = new JsonArray();
@@ -224,6 +218,13 @@ public class BaiduPhotoApiClient {
         }
     }
 
+    /**
+     * 辅助方法，用于构建通用的请求
+     * @param url 请求的URL
+     * @param body 请求体 (GET请求时为null)
+     * @param referer HTTP Referer头
+     * @return 构建好的Request对象
+     */
     private Request buildRequest(HttpUrl url, RequestBody body, String referer) {
         Request.Builder builder = new Request.Builder()
                 .url(url)

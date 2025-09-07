@@ -10,13 +10,13 @@ public class BatchModifyImageTimeTest {
 
     @Test
     public void run() {
-        // 指定起始时间，这里设置为 2025 年 3 月 7 日 12:00:00
-        LocalDateTime startTime = LocalDateTime.of(2020, 8, 9, 1, 0, 0);
+        // 指定起始时间
+        LocalDateTime startTime = LocalDateTime.of(2025, 9, 9, 1, 0, 0);
         ModificationOptions options = ModificationOptions.builder()
                 .folderPath(ROOT_FOLDER_PATH)
                 .startTime(startTime)
                 .nameType(NameType.POST_PARENTHESES)
-                .sortType(SortType.SEQUENTIAL)
+                .sortType(SortType.REVERSE)
                 .removeMetadata(false)
                 .modifyMD5(false)
                 .build();
