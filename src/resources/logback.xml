@@ -1,0 +1,35 @@
+<configuration>
+
+    <!-- 定义颜色常量，方便复用 -->
+    <property name="COLOR_RESET" value="\u001B[0m" />
+    <property name="COLOR_RED" value="\u001B[31m" />
+    <property name="COLOR_GREEN" value="\u001B[32m" />
+    <property name="COLOR_YELLOW" value="\u001B[33m" />
+    <property name="COLOR_BLUE" value="\u001B[34m" />
+    <property name="COLOR_PURPLE" value="\u001B[35m" />
+    <property name="COLOR_CYAN" value="\u001B[36m" />
+    <property name="COLOR_BOLD" value="\u001B[1m" />
+
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <!--
+              %d{HH:mm:ss.SSS}    - 时间戳
+              %boldYellow([%thread]) - 加粗黄色的线程信息
+              %highlight(%-5level) - 根据日志级别自动着色 (ERROR=红, WARN=黄, INFO=蓝, 等)
+              %cyan(%logger{15})   - 青色的类名
+              %msg                 - 日志消息本身
+              %n                   - 换行
+            -->
+            <pattern>%d{HH:mm:ss.SSS} %boldYellow([%thread]) %highlight(%-5level) %cyan(%logger{15}) - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!--
+      将根Logger的级别设置为INFO，并应用我们上面定义的STDOUT appender。
+      这意味着所有级别为INFO及以上的日志都会通过这个带颜色的格式进行输出。
+    -->
+    <root level="info">
+        <appender-ref ref="STDOUT" />
+    </root>
+
+</configuration>

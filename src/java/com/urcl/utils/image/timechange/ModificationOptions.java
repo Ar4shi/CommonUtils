@@ -17,8 +17,6 @@ public class ModificationOptions {
 
     private LocalDateTime startTime;
 
-    private NameType nameType;
-
     private SortType sortType;
 
     private Boolean removeMetadata;

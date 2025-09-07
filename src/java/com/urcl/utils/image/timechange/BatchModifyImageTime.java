@@ -1,5 +1,6 @@
 package com.urcl.utils.image.timechange;
 
+import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.imaging.common.bytesource.ByteSource;
 import org.apache.commons.imaging.common.bytesource.ByteSourceFile;
 import org.apache.commons.imaging.formats.jpeg.exif.ExifRewriter;
@@ -24,77 +25,119 @@ import java.util.regex.Pattern;
 /**
  * 批量修改图片的时间
  */
+@Slf4j
 public class BatchModifyImageTime {
 
     public static void modifyCreationTime(ModificationOptions options) {
         String root_folder_path = options.getFolderPath();
         File rootFolder = new File(root_folder_path);
         if (!rootFolder.isDirectory()) {
-            System.err.println("错误: 提供的根路径不是一个文件夹! " + root_folder_path);
+            log.error("错误: 提供的根路径不是一个文件夹! {}", root_folder_path);
             return;
         }
 
         File[] subFolders = rootFolder.listFiles(File::isDirectory);
         if (subFolders == null || subFolders.length == 0) {
-            System.out.println("在根目录中没有找到任何子文件夹");
+            log.info("在根目录中没有找到任何子文件夹。");
             return;
         }
 
-        System.out.println("发现 " + subFolders.length + " 个子文件夹，将为每一个文件夹进行分别进行排序");
+        log.info("发现 {} 个子文件夹，将为每一个文件夹进行分别进行排序。", subFolders.length);
 
         for (File folder : subFolders) {
+            log.info("\n=======================================================");
+            log.info("====== 开始处理文件夹: {} ======", folder.getName());
+            log.info("=======================================================");
 
-            System.out.println("\n=======================================================");
-            System.out.println("====== 开始处理文件夹: " + folder.getName() + " ======");
-            System.out.println("=======================================================");
+            try {
+                // 步骤 1: 自动检测 NameType
+                NameType detectedType = detectNameType(folder);
+                log.info("已自动检测到命名类型: {}", detectedType);
 
-            // 获取文件夹中的所有图片文件
-            List<File> imageFiles = getImageFiles(folder, options.getNameType(), options.getSortType());
+                // 步骤 2: 基于检测到的类型获取并排序文件
+                List<File> imageFiles = getImageFiles(folder, detectedType, options.getSortType());
+                if (imageFiles.isEmpty()) {
+                    log.warn("文件夹 {} 中没有找到符合条件的图片文件。", folder.getName());
+                    continue; // 跳到下一个文件夹
+                }
 
-            // 循环处理每张图片
-            for (int i = 0; i < imageFiles.size(); i++) {
-                File imageFile = imageFiles.get(i);
-                // 计算当前图片的创建时间，每次递增 1 分钟
-                LocalDateTime currentTime = options.getStartTime().plusMinutes(i);
-                // 将 LocalDateTime 转换为 Instant
-                Instant instant = currentTime.toInstant(ZoneOffset.UTC);
-                // 创建 FileTime 对象
-                FileTime fileTime = FileTime.from(instant);
+                log.info("找到 {} 个图片文件，准备处理...", imageFiles.size());
 
-                // 1. 移除EXIF元数据
-                if (options.getRemoveMetadata()) {
+                // 步骤 3: 循环处理每张图片
+                for (int i = 0; i < imageFiles.size(); i++) {
+                    File imageFile = imageFiles.get(i);
+                    LocalDateTime currentTime = options.getStartTime().plusMinutes(i);
+                    Instant instant = currentTime.toInstant(ZoneOffset.UTC);
+                    FileTime fileTime = FileTime.from(instant);
+
+                    // 移除EXIF元数据
+                    if (options.getRemoveMetadata()) {
+                        try {
+                            removeAllMetadata(imageFile);
+                            log.debug("已移除EXIF元数据: {}", imageFile.getName());
+                        } catch (Exception e) {
+                            log.error("处理文件 {} 时移除元数据出错: {}", imageFile.getName(), e.getMessage());
+                        }
+                    }
+
+                    // 修改MD5
+                    if (options.getModifyMD5()) {
+                        try (FileOutputStream fos = new FileOutputStream(imageFile, true)) {
+                            byte[] randomByte = new byte[1];
+                            ThreadLocalRandom.current().nextBytes(randomByte);
+                            fos.write(randomByte);
+                            log.debug("已向文件追加随机字节以修改MD5: {}", imageFile.getName());
+                        } catch (IOException e) {
+                            log.error("修改文件 {} 内容时出错: {}", imageFile.getName(), e.getMessage());
+                            continue;
+                        }
+                    }
+
+                    // 修改文件时间戳
                     try {
-                        removeAllMetadata(imageFile);
-                        System.out.println("已移除EXIF元数据: " + imageFile.getName());
-                    } catch (Exception e) {
-                        System.out.println("处理文件 " + imageFile.getName() + " 时出错: " + e.getMessage());
-                    }
-                }
-
-                // 1. 修改MD5：向文件末尾追加随机字节
-                if (options.getModifyMD5()) {
-                    try (FileOutputStream fos = new FileOutputStream(imageFile, true)) {
-                        byte[] randomByte = new byte[1];
-                        ThreadLocalRandom.current().nextBytes(randomByte); // 生成1个随机字节
-                        fos.write(randomByte); // 追加到文件末尾
-                        System.out.println("已向文件追加随机字节，新MD5将变化: " + imageFile.getName());
+                        Files.setAttribute(imageFile.toPath(), "creationTime", fileTime);
+                        Files.setLastModifiedTime(imageFile.toPath(), fileTime);
+                        log.info("成功修改 '{}' 的时间为 {}", imageFile.getName(), currentTime);
                     } catch (IOException e) {
-                        System.out.println("修改文件内容时出错: " + e.getMessage());
-                        continue; // 跳过当前文件，继续处理下一个
+                        log.error("修改文件 {} 的创建时间时出错：{}", imageFile.getName(), e.getMessage());
                     }
                 }
-
-                try {
-                    // 修改文件的创建时间
-                    Files.setAttribute(imageFile.toPath(), "creationTime", fileTime);
-                    // 修改文件的修改时间
-                    Files.setLastModifiedTime(imageFile.toPath(), fileTime);
-                    System.out.println("成功修改文件 " + imageFile.getName() + " 的创建时间为 " + currentTime);
-                } catch (IOException e) {
-                    System.out.println("修改文件 " + imageFile.getName() + " 的创建时间时出错：" + e.getMessage());
-                }
+            } catch (IllegalStateException e) {
+                // 如果 detectNameType 抛出异常，则捕获它
+                log.error("!!! 跳过文件夹 '{}': {}", folder.getName(), e.getMessage());
             }
         }
+    }
+
+    /**
+     * 根据文件名自动检测其命名类型。
+     *
+     * @param folder 要检测的文件夹。
+     * @return 检测到的 NameType。
+     * @throws IllegalStateException 如果文件夹为空或无法识别文件名类型。
+     */
+    private static NameType detectNameType(File folder) throws IllegalStateException {
+        File[] imageFiles = folder.listFiles((dir, name) ->
+                name.toLowerCase().endsWith(".jpg") ||
+                        name.toLowerCase().endsWith(".jpeg") ||
+                        name.toLowerCase().endsWith(".png"));
+
+        if (imageFiles == null || imageFiles.length == 0) {
+            throw new IllegalStateException("文件夹为空，无法确定命名约定。");
+        }
+
+        File firstFile = imageFiles[0];
+        String nameWithoutExt = firstFile.getName().substring(0, firstFile.getName().lastIndexOf('.'));
+
+        // 注意：匹配顺序很重要，应从最具体到最不具体
+        if (nameWithoutExt.matches("^20\\d{12}$")) return NameType.TIMESTAMP_14;
+        if (nameWithoutExt.matches("^\\d{8}_.+")) return NameType.DATE_STRING_SEQ;
+        if (nameWithoutExt.matches(".+\\s\\(\\d+\\)$")) return NameType.PREFIX_IN_PARENTHESES;
+        if (nameWithoutExt.matches(".+\\(\\d+\\)$")) return NameType.POST_PARENTHESES;
+        if (nameWithoutExt.matches("^\\d+_.+")) return NameType.RRE_UNDERLINE;
+        if (nameWithoutExt.matches("^\\d+$")) return NameType.NUMBER;
+
+        throw new IllegalStateException("无法识别文件名格式。已检查的第一个文件: '" + firstFile.getName() + "'");
     }
 
     private static void removeAllMetadata(File imageFile) throws Exception {
