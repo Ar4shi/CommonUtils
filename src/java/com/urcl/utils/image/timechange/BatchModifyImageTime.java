@@ -43,6 +43,11 @@ public class BatchModifyImageTime {
         System.out.println("发现 " + subFolders.length + " 个子文件夹，将为每一个文件夹进行分别进行排序");
 
         for (File folder : subFolders) {
+
+            System.out.println("\n=======================================================");
+            System.out.println("====== 开始处理文件夹: " + folder.getName() + " ======");
+            System.out.println("=======================================================");
+
             // 获取文件夹中的所有图片文件
             List<File> imageFiles = getImageFiles(folder, options.getNameType(), options.getSortType());
 
