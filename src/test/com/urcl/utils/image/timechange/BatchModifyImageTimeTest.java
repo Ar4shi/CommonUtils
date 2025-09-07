@@ -6,7 +6,7 @@ import java.time.LocalDateTime;
 
 public class BatchModifyImageTimeTest {
 
-    private static final String ROOT_FOLDER_PATH = "D:\\Edge下载\\collection\\UnityNya";
+    private static final String ROOT_FOLDER_PATH = "D:\\Edge下载\\collection\\CoolSummer";
 
     private static final LocalDateTime START_TIME = LocalDateTime.of(2025, 9, 9, 1, 0, 0);
 

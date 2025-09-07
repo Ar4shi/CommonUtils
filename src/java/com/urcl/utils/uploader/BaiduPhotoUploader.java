@@ -36,8 +36,11 @@ public class BaiduPhotoUploader {
     // [可配置] 设置每个文件上传的间隔时间（毫秒）
     public static final int UPLOAD_FILE_INTERVAL_MS = 10;
 
-    // [可配置] 设置绑定每个相册之间的最小间隔时间（毫秒）
+    // [可配置] 设置每次调用“添加到相册”接口之间的最小间隔时间（毫秒）
     public static final int BAND_ALBUM_INTERVAL_MS = 10000;
+
+    // [可配置] 批量添加文件到相册时，每批次包含的文件数量。这是为了防止URL过长（HTTP 414错误）
+    private static final int ADD_TO_ALBUM_CHUNK_SIZE = 100;
 
     // 所有的线程在执行“添加到相册”操作前都必须先获得这个锁。
     private static final Object ALBUM_ADD_LOCK = new Object();
@@ -49,7 +52,6 @@ public class BaiduPhotoUploader {
      * 内部类，用于封装单个文件夹（相册）上传任务的结果。
      */
     private static class UploadTaskResult {
-        // ... 此内部类保持不变 ...
         private final String albumName;
         private final int totalFiles;
         private final int successfulUploads;
@@ -122,8 +124,6 @@ public class BaiduPhotoUploader {
 
                     log.info("  -> 成功创建相册! 相册ID: {}", newAlbumId);
                     createdAlbums.add(new AlbumInfo(newAlbumId, newTid, folder));
-
-                    // ** [优化] 等待信息是非关键的，降级为 DEBUG **
                     log.debug("  -> 等待 {} 秒...", (double) CREATE_ALBUM_INTERVAL_MS / 1000);
                     Thread.sleep(CREATE_ALBUM_INTERVAL_MS);
 
@@ -151,7 +151,6 @@ public class BaiduPhotoUploader {
 
         executor.shutdown();
         log.info("所有批次处理完毕！");
-
         printSummaryReport();
     }
 
@@ -197,17 +196,33 @@ public class BaiduPhotoUploader {
             }
 
             if (!uploadedFsids.isEmpty()) {
-                log.info(">>> [线程 {}] 所有文件上传完成，准备将 {} 个文件批量添加到相册...", threadInfo, uploadedFsids.size());
+                log.info(">>> [线程 {}] 所有文件上传完成，准备将 {} 个文件分批添加到相册...", threadInfo, uploadedFsids.size());
 
                 synchronized (ALBUM_ADD_LOCK) {
-                    // ** [优化] 锁信息是调试细节，降级为 DEBUG **
-                    log.debug(">>> [线程 {}] 获取到同步锁，正在添加到相册...", threadInfo);
-                    apiClient.addFilesToAlbum(albumInfo.getAlbumId(), uploadedFsids, albumInfo.getTid());
-                    log.info("  -> [线程 {}] 批量添加成功! 释放同步锁。", threadInfo);
+                    log.debug(">>> [线程 {}] 获取到同步锁，准备分批添加到相册...", threadInfo);
 
-                    // ** [优化] 等待信息是非关键的，降级为 DEBUG **
-                    log.debug("  -> [线程 {}] 等待 {} 秒以确保服务器处理...", threadInfo, (double) BAND_ALBUM_INTERVAL_MS / 1000);
-                    Thread.sleep(BAND_ALBUM_INTERVAL_MS);
+                    int totalFsids = uploadedFsids.size();
+                    int totalChunks = (int) Math.ceil((double) totalFsids / ADD_TO_ALBUM_CHUNK_SIZE);
+
+                    for (int j = 0; j < totalFsids; j += ADD_TO_ALBUM_CHUNK_SIZE) {
+                        int end = Math.min(j + ADD_TO_ALBUM_CHUNK_SIZE, totalFsids);
+                        List<Long> chunk = uploadedFsids.subList(j, end);
+                        int currentChunkNum = (j / ADD_TO_ALBUM_CHUNK_SIZE) + 1;
+
+                        try {
+                            log.info("  -> [线程 {}] 正在添加批次 {}/{} ({}个文件) 到相册...", threadInfo, currentChunkNum, totalChunks, chunk.size());
+                            apiClient.addFilesToAlbum(albumInfo.getAlbumId(), chunk, albumInfo.getTid());
+                            log.info("     [线程 {}] 批次 {} 添加成功!", threadInfo, currentChunkNum);
+                        } catch (Exception e) {
+                            log.error("!!! [线程 {}] 添加批次 {} 到相册 '{}' 失败:", threadInfo, currentChunkNum, albumTitle, e);
+                        }
+
+                        log.debug("  -> [线程 {}] 等待 {} 秒，再提交下一批或释放锁...", threadInfo, (double) BAND_ALBUM_INTERVAL_MS / 1000);
+                        Thread.sleep(BAND_ALBUM_INTERVAL_MS);
+                        // ==========================================================
+                    }
+
+                    log.info("  -> [线程 {}] 所有批次添加完毕! 释放同步锁。", threadInfo);
                 }
             }
 
@@ -226,13 +241,11 @@ public class BaiduPhotoUploader {
         long fsid;
         String threadInfo = Thread.currentThread().getId() + "_" + Thread.currentThread().getName();
 
-        // ** [优化] 单个文件上传的内部步骤全部降级为 DEBUG **
         log.debug("  [{}] [1/3] 正在预创建...", threadInfo);
         PrecreateResponse precreateResponse = apiClient.precreate(file, remotePath, albumId);
 
         if (precreateResponse.isSecondPass() || (precreateResponse.getErrno() == 0 && precreateResponse.getFsId() != null)) {
             fsid = precreateResponse.getFsId();
-            // ** [优化] 秒传成功是一个重要的、简洁的结果，可以保留为 INFO **
             log.info("  -> [{}] 文件已存在 (秒传成功)! FSID: {}", threadInfo, fsid);
         } else if (precreateResponse.isUploadNeeded()) {
             String uploadId = precreateResponse.getUploadid();
@@ -248,7 +261,6 @@ public class BaiduPhotoUploader {
                 throw new IOException("创建文件记录失败，错误码: " + createResponse.getErrno());
             }
             fsid = createResponse.getData().getFsid();
-            // ** [优化] 创建成功是重要结果，保留为 INFO **
             log.info("  -> [{}] 文件记录创建成功! FSID: {}", threadInfo, fsid);
         } else {
             throw new IOException("预创建失败，错误码: " + precreateResponse.getErrno());
@@ -263,7 +275,6 @@ public class BaiduPhotoUploader {
             java.nio.file.Path sourcePath = folder.toPath();
             java.nio.file.Path destPath = new File(folder.getParent(), "[Finished] " + folder.getName()).toPath();
             Files.move(sourcePath, destPath, StandardCopyOption.REPLACE_EXISTING);
-            // ** [优化] 重命名成功是预料之中的事，降级为 DEBUG **
             log.debug("  -> [线程 {}] 已成功将文件夹重命名为: {}", threadInfo, destPath.getFileName());
         } catch (IOException e) {
             log.error("!!! [线程 {}] 重命名文件夹 {} 失败: {}", threadInfo, folder.getName(), e.getMessage());
@@ -271,7 +282,6 @@ public class BaiduPhotoUploader {
     }
 
     private void printSummaryReport() {
-        // ... 摘要报告是最终的关键信息，全部保留为 INFO 级别 ...
         log.info("==========================================================================");
         log.info("=======================   U P L O A D   S U M M A R Y   =======================");
         log.info("==========================================================================");
