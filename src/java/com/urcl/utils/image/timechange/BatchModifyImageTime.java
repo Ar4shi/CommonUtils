@@ -28,6 +28,7 @@ import java.util.regex.Pattern;
 @Slf4j
 public class BatchModifyImageTime {
 
+    // ... modifyCreationTime 方法 和 detectNameType 方法保持不变 ...
     public static void modifyCreationTime(ModificationOptions options) {
         String root_folder_path = options.getFolderPath();
         File rootFolder = new File(root_folder_path);
@@ -109,13 +110,6 @@ public class BatchModifyImageTime {
         }
     }
 
-    /**
-     * 根据文件名自动检测其命名类型。
-     *
-     * @param folder 要检测的文件夹。
-     * @return 检测到的 NameType。
-     * @throws IllegalStateException 如果文件夹为空或无法识别文件名类型。
-     */
     private static NameType detectNameType(File folder) throws IllegalStateException {
         File[] imageFiles = folder.listFiles((dir, name) ->
                 name.toLowerCase().endsWith(".jpg") ||
@@ -129,7 +123,8 @@ public class BatchModifyImageTime {
         File firstFile = imageFiles[0];
         String nameWithoutExt = firstFile.getName().substring(0, firstFile.getName().lastIndexOf('.'));
 
-        // 注意：匹配顺序很重要，应从最具体到最不具体
+        // 匹配顺序很重要，从最具体的开始
+        if (nameWithoutExt.matches("^[a-zA-Z]+20\\d{4}_\\d+$")) return NameType.PREFIX_YYYYMM_SEQ;
         if (nameWithoutExt.matches("^20\\d{12}$")) return NameType.TIMESTAMP_14;
         if (nameWithoutExt.matches("^\\d{8}_.+")) return NameType.DATE_STRING_SEQ;
         if (nameWithoutExt.matches(".+\\s\\(\\d+\\)$")) return NameType.PREFIX_IN_PARENTHESES;
@@ -140,11 +135,9 @@ public class BatchModifyImageTime {
         throw new IllegalStateException("无法识别文件名格式。已检查的第一个文件: '" + firstFile.getName() + "'");
     }
 
+    // ... removeAllMetadata, removeExifMetadata, rewriteFileContent 方法保持不变 ...
     private static void removeAllMetadata(File imageFile) throws Exception {
-        // 方法1: 使用Apache Commons Imaging移除EXIF数据
         removeExifMetadata(imageFile);
-
-        // 方法2: 重写文件内容(破坏可能存在的其他元数据结构)
         rewriteFileContent(imageFile);
     }
 
@@ -153,149 +146,139 @@ public class BatchModifyImageTime {
             ByteSource byteSource = new ByteSourceFile(imageFile);
             try (ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
                 new ExifRewriter().removeExifMetadata(byteSource, outputStream);
-
-                // 将处理后的数据写回原文件
                 try (FileOutputStream fos = new FileOutputStream(imageFile)) {
                     fos.write(outputStream.toByteArray());
                 }
             }
         } catch (Exception e) {
             System.out.println("使用Commons Imaging移除EXIF失败: " + e.getMessage());
-            // 继续尝试其他方法
         }
     }
 
     private static void rewriteFileContent(File imageFile) throws IOException {
-        // 读取文件内容
         byte[] content = Files.readAllBytes(imageFile.toPath());
-
-        // 查找可能的元数据标记并清除
-        // 这是一个简化的示例，实际实现可能需要更复杂的解析
         String contentStr = new String(content);
-
-        // 尝试查找并移除XMP元数据
         int xmpStart = contentStr.indexOf("<x:xmpmeta");
         if (xmpStart != -1) {
             int xmpEnd = contentStr.indexOf("</x:xmpmeta>", xmpStart);
             if (xmpEnd != -1) {
-                xmpEnd += 12; // "</x:xmpmeta>"的长度
-                // 用空格替换XMP数据
+                xmpEnd += 12;
                 for (int i = xmpStart; i < xmpEnd && i < content.length; i++) {
                     content[i] = ' ';
                 }
             }
         }
-
-        // 写回修改后的内容
         try (FileOutputStream fos = new FileOutputStream(imageFile)) {
             fos.write(content);
         }
     }
 
+
     public static List<File> getImageFiles(File folder, NameType nameType, SortType sortType) {
-        List<File> imageFiles = new ArrayList<>();
-        File[] files = folder.listFiles();
-        if (files != null) {
-            fileSort(files, nameType, sortType);
-            for (File file : files) {
-                if (file.isFile()) {
-                    String fileName = file.getName().toLowerCase();
-                    if (fileName.endsWith(".png") || fileName.endsWith(".jpg") || fileName.endsWith(".gif")) {
-                        imageFiles.add(file);
-                    }
-                }
-            }
+        File[] files = folder.listFiles((dir, name) -> {
+            String lowerName = name.toLowerCase();
+            return lowerName.endsWith(".png") || lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg") || lowerName.endsWith(".gif");
+        });
+
+        if (files == null || files.length == 0) {
+            return new ArrayList<>();
         }
-        return imageFiles;
+
+        fileSort(files, nameType, sortType);
+        return new ArrayList<>(Arrays.asList(files));
     }
 
+    /**
+     * 根据指定的命名类型和排序类型对文件数组进行排序。
+     */
     private static void fileSort(File[] files, NameType nameType, SortType sortType) {
-        if (NameType.POST_PARENTHESES == nameType) {
-            Arrays.sort(files, Comparator.comparing(file -> {
-                String fileName = file.getName();
-                int startIndex = fileName.lastIndexOf('(') + 1;
-                int endIndex = fileName.lastIndexOf(')');
-                return Integer.parseInt(fileName.substring(startIndex, endIndex)) * (SortType.SEQUENTIAL.equals(sortType) ? 1 : -1);
-            }));
-        } else if (NameType.NUMBER == nameType) {
-            Arrays.sort(files, Comparator.comparing(file -> {
-                String fileName = file.getName();
-                int endIndex = fileName.lastIndexOf('.');
-                return Integer.parseInt(fileName.substring(0, endIndex)) * (SortType.SEQUENTIAL.equals(sortType) ? 1 : -1);
-            }));
-        } else if (NameType.RRE_UNDERLINE == nameType) {
-            Arrays.sort(files, Comparator.comparing(file -> {
-                String fileName = file.getName();
-                int startIndex = 0;
-                int endIndex = fileName.indexOf('_');
-                return Integer.parseInt(fileName.substring(startIndex, endIndex)) * (SortType.SEQUENTIAL.equals(sortType) ? 1 : -1);
-            }));
-        } else if (NameType.TIMESTAMP_14 == nameType) {
-            // 新增：14位时间戳排序逻辑
-            Arrays.sort(files, Comparator.comparing(file -> {
-                String fileName = file.getName();
-                // 使用正则匹配连续14位数字
-                Matcher matcher = Pattern.compile("\\d{14}").matcher(fileName);
-                if (matcher.find()) {
-                    return Long.parseLong(matcher.group()) * (SortType.SEQUENTIAL.equals(sortType) ? 1 : -1);
-                } else {
-                    // 未找到时按文件名自然排序（或抛异常）
-                    return 0L; // 或 throw new IllegalArgumentException("无效文件名: " + fileName);
-                }
-            }));
-        } else if (NameType.DATE_STRING_SEQ == nameType) { // 新增排序类型
-            Arrays.sort(files, Comparator.comparing(file -> {
-                String fileName = file.getName();
-                // 提取最后一个下划线后的数字部分（如0001）
-                int lastUnderscore = fileName.lastIndexOf('_');
-                int dotIndex = fileName.lastIndexOf('.');
+        // 使用 switch 结构，更清晰且易于扩展
+        switch (nameType) {
+            case POST_PARENTHESES:
+                Arrays.sort(files, Comparator.comparing(file -> {
+                    String fileName = file.getName();
+                    int startIndex = fileName.lastIndexOf('(') + 1;
+                    int endIndex = fileName.lastIndexOf(')');
+                    return Integer.parseInt(fileName.substring(startIndex, endIndex));
+                }));
+                break;
 
-                // 确保文件名格式有效
-                if (lastUnderscore == -1 || dotIndex <= lastUnderscore) {
-                    throw new IllegalArgumentException("无效文件名格式: " + fileName);
-                }
+            case NUMBER:
+                Arrays.sort(files, Comparator.comparing(file -> {
+                    String fileName = file.getName();
+                    int endIndex = fileName.lastIndexOf('.');
+                    return Integer.parseInt(fileName.substring(0, endIndex));
+                }));
+                break;
 
-                String seqPart = fileName.substring(lastUnderscore + 1, dotIndex);
-                return Integer.parseInt(seqPart) * (SortType.SEQUENTIAL.equals(sortType) ? 1 : -1);
-            }));
-        } else if (NameType.PREFIX_IN_PARENTHESES == nameType) { // 【新增的 else if 分支】
-            // 使用一个自定义的、支持多级比较的 Comparator
-            Arrays.sort(files, (file1, file2) -> {
-                String name1 = file1.getName();
-                String name2 = file2.getName();
+            case RRE_UNDERLINE:
+                Arrays.sort(files, Comparator.comparing(file -> {
+                    String fileName = file.getName();
+                    int endIndex = fileName.indexOf('_');
+                    return Integer.parseInt(fileName.substring(0, endIndex));
+                }));
+                break;
 
-                // --- 解析 file1 ---
-                int p1Start = name1.lastIndexOf('(');
-                int p1End = name1.lastIndexOf(')');
-                // 找到括号前的前缀，注意要包含前面的空格以便后续处理
-                String prefix1 = name1.substring(0, p1Start).trim();
-                int num1 = Integer.parseInt(name1.substring(p1Start + 1, p1End));
+            case TIMESTAMP_14:
+                Arrays.sort(files, Comparator.comparing(file -> {
+                    Matcher matcher = Pattern.compile("\\d{14}").matcher(file.getName());
+                    return matcher.find() ? Long.parseLong(matcher.group()) : 0L;
+                }));
+                break;
 
-                // --- 解析 file2 ---
-                int p2Start = name2.lastIndexOf('(');
-                int p2End = name2.lastIndexOf(')');
-                String prefix2 = name2.substring(0, p2Start).trim();
-                int num2 = Integer.parseInt(name2.substring(p2Start + 1, p2End));
+            // ======================== [核心修改] ========================
+            // 让 PREFIX_YYYYMM_SEQ 和 DATE_STRING_SEQ 使用完全相同的排序逻辑
+            // 即：只按最后一个下划线后面的数字排序
+            case PREFIX_YYYYMM_SEQ:
+            case DATE_STRING_SEQ:
+                Arrays.sort(files, Comparator.comparingInt(file -> {
+                    String fileName = file.getName();
+                    int lastUnderscore = fileName.lastIndexOf('_');
+                    int dotIndex = fileName.lastIndexOf('.');
 
-                // --- 多级比较逻辑 ---
-                // 1. 先比较括号前的部分 (主排序键)
-                int prefixCompare = prefix1.compareTo(prefix2);
-                if (prefixCompare != 0) {
-                    return prefixCompare; // 如果前缀不同，直接返回比较结果
-                }
+                    if (lastUnderscore == -1 || dotIndex <= lastUnderscore) {
+                        log.warn("无法从 '{}' 中解析出序号，将按0处理。", fileName);
+                        return 0; // 返回一个默认值
+                    }
 
-                // 2. 如果前缀相同，再比较括号里的数字 (次排序键)
-                return Integer.compare(num1, num2);
-            });
-            // 【重要】在排序完成后，单独处理逆序逻辑
-            // 因为上面的自定义比较器没有简单的方法直接乘以 -1
-            if (SortType.REVERSE.equals(sortType)) {
-                // 将数组反转
-                for (int i = 0; i < files.length / 2; i++) {
-                    File temp = files[i];
-                    files[i] = files[files.length - 1 - i];
-                    files[files.length - 1 - i] = temp;
-                }
+                    try {
+                        String seqPart = fileName.substring(lastUnderscore + 1, dotIndex);
+                        return Integer.parseInt(seqPart);
+                    } catch (NumberFormatException e) {
+                        log.warn("文件名 '{}' 的序号部分不是有效数字，将按0处理。", fileName);
+                        return 0; // 解析失败时返回默认值
+                    }
+                }));
+                break;
+            // ==========================================================
+
+            case PREFIX_IN_PARENTHESES:
+                Arrays.sort(files, (file1, file2) -> {
+                    String name1 = file1.getName();
+                    String name2 = file2.getName();
+                    int p1Start = name1.lastIndexOf('(');
+                    String prefix1 = name1.substring(0, p1Start).trim();
+                    int num1 = Integer.parseInt(name1.substring(p1Start + 1, name1.lastIndexOf(')')));
+                    int p2Start = name2.lastIndexOf('(');
+                    String prefix2 = name2.substring(0, p2Start).trim();
+                    int num2 = Integer.parseInt(name2.substring(p2Start + 1, name2.lastIndexOf(')')));
+                    int prefixCompare = prefix1.compareTo(prefix2);
+                    return (prefixCompare != 0) ? prefixCompare : Integer.compare(num1, num2);
+                });
+                break;
+
+            default:
+                // 对于未知或不符合任何规则的类型，按文件名自然排序
+                Arrays.sort(files, Comparator.comparing(File::getName));
+                break;
+        }
+
+        // 所有排序完成后，统一处理逆序逻辑
+        if (SortType.REVERSE.equals(sortType)) {
+            for (int i = 0; i < files.length / 2; i++) {
+                File temp = files[i];
+                files[i] = files[files.length - 1 - i];
+                files[files.length - 1 - i] = temp;
             }
         }
     }

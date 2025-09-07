@@ -40,7 +40,7 @@ public class BaiduPhotoUploader {
     public static final int BAND_ALBUM_INTERVAL_MS = 10000;
 
     // [可配置] 批量添加文件到相册时，每批次包含的文件数量。这是为了防止URL过长（HTTP 414错误）
-    private static final int ADD_TO_ALBUM_CHUNK_SIZE = 100;
+    private static final int ADD_TO_ALBUM_CHUNK_SIZE = 200;
 
     // 所有的线程在执行“添加到相册”操作前都必须先获得这个锁。
     private static final Object ALBUM_ADD_LOCK = new Object();
