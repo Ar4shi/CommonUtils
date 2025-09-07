@@ -27,56 +27,67 @@ import java.util.regex.Pattern;
 public class BatchModifyImageTime {
 
     public static void modifyCreationTime(ModificationOptions options) {
-        File folder = new File(options.getFolderPath());
-        if (!folder.exists() || !folder.isDirectory()) {
-            System.out.println("指定的文件夹不存在或不是一个有效的文件夹。");
+        String root_folder_path = options.getFolderPath();
+        File rootFolder = new File(root_folder_path);
+        if (!rootFolder.isDirectory()) {
+            System.err.println("错误: 提供的根路径不是一个文件夹! " + root_folder_path);
             return;
         }
 
-        // 获取文件夹中的所有图片文件
-        List<File> imageFiles = getImageFiles(folder, options.getNameType(), options.getSortType());
+        File[] subFolders = rootFolder.listFiles(File::isDirectory);
+        if (subFolders == null || subFolders.length == 0) {
+            System.out.println("在根目录中没有找到任何子文件夹");
+            return;
+        }
 
-        // 循环处理每张图片
-        for (int i = 0; i < imageFiles.size(); i++) {
-            File imageFile = imageFiles.get(i);
-            // 计算当前图片的创建时间，每次递增 1 分钟
-            LocalDateTime currentTime = options.getStartTime().plusMinutes(i);
-            // 将 LocalDateTime 转换为 Instant
-            Instant instant = currentTime.toInstant(ZoneOffset.UTC);
-            // 创建 FileTime 对象
-            FileTime fileTime = FileTime.from(instant);
+        System.out.println("发现 " + subFolders.length + " 个子文件夹，将为每一个文件夹进行分别进行排序");
 
-            // 1. 移除EXIF元数据
-            if (options.getRemoveMetadata()) {
+        for (File folder : subFolders) {
+            // 获取文件夹中的所有图片文件
+            List<File> imageFiles = getImageFiles(folder, options.getNameType(), options.getSortType());
+
+            // 循环处理每张图片
+            for (int i = 0; i < imageFiles.size(); i++) {
+                File imageFile = imageFiles.get(i);
+                // 计算当前图片的创建时间，每次递增 1 分钟
+                LocalDateTime currentTime = options.getStartTime().plusMinutes(i);
+                // 将 LocalDateTime 转换为 Instant
+                Instant instant = currentTime.toInstant(ZoneOffset.UTC);
+                // 创建 FileTime 对象
+                FileTime fileTime = FileTime.from(instant);
+
+                // 1. 移除EXIF元数据
+                if (options.getRemoveMetadata()) {
+                    try {
+                        removeAllMetadata(imageFile);
+                        System.out.println("已移除EXIF元数据: " + imageFile.getName());
+                    } catch (Exception e) {
+                        System.out.println("处理文件 " + imageFile.getName() + " 时出错: " + e.getMessage());
+                    }
+                }
+
+                // 1. 修改MD5：向文件末尾追加随机字节
+                if (options.getModifyMD5()) {
+                    try (FileOutputStream fos = new FileOutputStream(imageFile, true)) {
+                        byte[] randomByte = new byte[1];
+                        ThreadLocalRandom.current().nextBytes(randomByte); // 生成1个随机字节
+                        fos.write(randomByte); // 追加到文件末尾
+                        System.out.println("已向文件追加随机字节，新MD5将变化: " + imageFile.getName());
+                    } catch (IOException e) {
+                        System.out.println("修改文件内容时出错: " + e.getMessage());
+                        continue; // 跳过当前文件，继续处理下一个
+                    }
+                }
+
                 try {
-                    removeAllMetadata(imageFile);
-                    System.out.println("已移除EXIF元数据: " + imageFile.getName());
-                } catch (Exception e) {
-                    System.out.println("处理文件 " + imageFile.getName() + " 时出错: " + e.getMessage());
-                }
-            }
-
-            // 1. 修改MD5：向文件末尾追加随机字节
-            if (options.getModifyMD5()) {
-                try (FileOutputStream fos = new FileOutputStream(imageFile, true)) {
-                    byte[] randomByte = new byte[1];
-                    ThreadLocalRandom.current().nextBytes(randomByte); // 生成1个随机字节
-                    fos.write(randomByte); // 追加到文件末尾
-                    System.out.println("已向文件追加随机字节，新MD5将变化: " + imageFile.getName());
+                    // 修改文件的创建时间
+                    Files.setAttribute(imageFile.toPath(), "creationTime", fileTime);
+                    // 修改文件的修改时间
+                    Files.setLastModifiedTime(imageFile.toPath(), fileTime);
+                    System.out.println("成功修改文件 " + imageFile.getName() + " 的创建时间为 " + currentTime);
                 } catch (IOException e) {
-                    System.out.println("修改文件内容时出错: " + e.getMessage());
-                    continue; // 跳过当前文件，继续处理下一个
+                    System.out.println("修改文件 " + imageFile.getName() + " 的创建时间时出错：" + e.getMessage());
                 }
-            }
-
-            try {
-                // 修改文件的创建时间
-                Files.setAttribute(imageFile.toPath(), "creationTime", fileTime);
-                // 修改文件的修改时间
-                Files.setLastModifiedTime(imageFile.toPath(), fileTime);
-                System.out.println("成功修改文件 " + imageFile.getName() + " 的创建时间为 " + currentTime);
-            } catch (IOException e) {
-                System.out.println("修改文件 " + imageFile.getName() + " 的创建时间时出错：" + e.getMessage());
             }
         }
     }
