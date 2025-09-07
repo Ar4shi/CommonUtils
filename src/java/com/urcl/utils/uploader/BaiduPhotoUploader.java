@@ -49,6 +49,7 @@ public class BaiduPhotoUploader {
      * 内部类，用于封装单个文件夹（相册）上传任务的结果。
      */
     private static class UploadTaskResult {
+        // ... 此内部类保持不变 ...
         private final String albumName;
         private final int totalFiles;
         private final int successfulUploads;
@@ -101,13 +102,13 @@ public class BaiduPhotoUploader {
             int batchNum = (i / BATCH_SIZE + 1);
             int totalBatches = (int) Math.ceil((double) subFolderList.size() / BATCH_SIZE);
 
-            log.info("\n======================= 开始处理批次 {} / {} =======================", batchNum, totalBatches);
+            log.info("======================= 开始处理批次 {} / {} =======================", batchNum, totalBatches);
 
-            log.info("\n======== [批次 {}] 步骤 1: 串行创建相册 ========", batchNum);
+            log.info("======== [批次 {}] 步骤 1: 串行创建相册 ========", batchNum);
             List<AlbumInfo> createdAlbums = new ArrayList<>();
             for (File folder : batch) {
                 String albumTitle = rootFolder.getName() + "_" + folder.getName();
-                log.info("\n>>> 准备创建相册: {}", albumTitle);
+                log.info(">>> 准备创建相册: {}", albumTitle);
                 try {
                     CreateAlbumResponse albumResponse = mainApiClient.createAlbum(albumTitle);
                     String newAlbumId = albumResponse.getAlbumId();
@@ -115,28 +116,29 @@ public class BaiduPhotoUploader {
 
                     if (newAlbumId == null || newAlbumId.isEmpty() || newTid == null || newTid.isEmpty()) {
                         log.error("!!! 创建相册 '{}' 失败: 未能获取到有效的album_id或tid。", albumTitle);
-                        taskResults.add(new UploadTaskResult(albumTitle, 0, 0)); // 记录创建失败的任务
+                        taskResults.add(new UploadTaskResult(albumTitle, 0, 0));
                         continue;
                     }
 
                     log.info("  -> 成功创建相册! 相册ID: {}", newAlbumId);
                     createdAlbums.add(new AlbumInfo(newAlbumId, newTid, folder));
 
-                    log.info("  -> 等待 {} 秒...", (double) CREATE_ALBUM_INTERVAL_MS / 1000);
+                    // ** [优化] 等待信息是非关键的，降级为 DEBUG **
+                    log.debug("  -> 等待 {} 秒...", (double) CREATE_ALBUM_INTERVAL_MS / 1000);
                     Thread.sleep(CREATE_ALBUM_INTERVAL_MS);
 
                 } catch (Exception e) {
                     log.error("!!! 创建相册 '{}' 时发生严重错误:", albumTitle, e);
-                    taskResults.add(new UploadTaskResult(albumTitle, 0, 0)); // 记录创建失败的任务
+                    taskResults.add(new UploadTaskResult(albumTitle, 0, 0));
                 }
             }
 
             if (createdAlbums.isEmpty()) {
-                log.warn("\n本批次没有成功创建任何相册，跳至下一批。");
+                log.warn("本批次没有成功创建任何相册，跳至下一批。");
                 continue;
             }
 
-            log.info("\n======== [批次 {}] 步骤 2: 并行上传文件到已创建的相册中 ========", batchNum);
+            log.info("======== [批次 {}] 步骤 2: 并行上传文件到已创建的相册中 ========", batchNum);
             List<CompletableFuture<Void>> uploadFutures = createdAlbums.stream()
                     .map(albumInfo -> CompletableFuture.runAsync(() -> {
                         processFilesForAlbum(new BaiduPhotoApiClient(cookie, bdstoken), albumInfo);
@@ -144,18 +146,17 @@ public class BaiduPhotoUploader {
                     .collect(Collectors.toList());
 
             CompletableFuture.allOf(uploadFutures.toArray(new CompletableFuture[0])).join();
-            log.info("\n======== [批次 {}] 文件上传任务已全部完成 ========", batchNum);
+            log.info("======== [批次 {}] 文件上传任务已全部完成 ========", batchNum);
         }
 
         executor.shutdown();
-        log.info("\n\n所有批次处理完毕！");
+        log.info("所有批次处理完毕！");
 
         printSummaryReport();
     }
 
     private void processFilesForAlbum(BaiduPhotoApiClient apiClient, AlbumInfo albumInfo) {
         String albumTitle = albumInfo.getFolder().getName();
-        // 设置线程名称，便于调试
         Thread.currentThread().setName(albumTitle);
         String threadInfo = Thread.currentThread().getId() + "_" + Thread.currentThread().getName();
         log.info("====== [线程 {}] 开始上传照片到相册: {} ======", threadInfo, albumTitle);
@@ -180,32 +181,32 @@ public class BaiduPhotoUploader {
         log.info("[线程 {}] 发现 {} 张图片，已按日期排序。", threadInfo, totalFiles);
 
         try {
-            // *** 改动点: 使用带索引的for循环以显示进度 ***
             for (int i = 0; i < totalFiles; i++) {
                 File file = fileList.get(i);
-                int currentFileNum = i + 1; // 当前文件号 (从1开始)
+                int currentFileNum = i + 1;
 
-                log.info("\n>>> [线程 {}] [{}/{}] 正在上传文件: {}", threadInfo, currentFileNum, totalFiles, file.getName());
+                log.info(">>> [线程 {}] [{}/{}] 正在上传文件: {}", threadInfo, currentFileNum, totalFiles, file.getName());
                 try {
                     long fsid = uploadSingleFileAndGetFsid(apiClient, file, albumInfo.getAlbumId());
                     uploadedFsids.add(fsid);
                     successCount++;
                 } catch (Exception e) {
-                    // *** 改动点: 在错误日志中也加入进度信息 ***
                     log.error("!!! [线程 {}] [{}/{}] 上传文件 {} 失败: {}", threadInfo, currentFileNum, totalFiles, file.getName(), e.getMessage());
                 }
-                Thread.sleep(UPLOAD_FILE_INTERVAL_MS); // 文件间短暂停顿
+                Thread.sleep(UPLOAD_FILE_INTERVAL_MS);
             }
 
             if (!uploadedFsids.isEmpty()) {
-                log.info("\n>>> [线程 {}] 所有文件上传完成，准备将 {} 个文件批量添加到相册...", threadInfo, uploadedFsids.size());
+                log.info(">>> [线程 {}] 所有文件上传完成，准备将 {} 个文件批量添加到相册...", threadInfo, uploadedFsids.size());
 
                 synchronized (ALBUM_ADD_LOCK) {
-                    log.info(">>> [线程 {}] 获取到同步锁，正在添加到相册...", threadInfo);
+                    // ** [优化] 锁信息是调试细节，降级为 DEBUG **
+                    log.debug(">>> [线程 {}] 获取到同步锁，正在添加到相册...", threadInfo);
                     apiClient.addFilesToAlbum(albumInfo.getAlbumId(), uploadedFsids, albumInfo.getTid());
                     log.info("  -> [线程 {}] 批量添加成功! 释放同步锁。", threadInfo);
 
-                    log.info("  -> [线程 {}] 等待 {} 秒以确保服务器处理...", threadInfo, (double) BAND_ALBUM_INTERVAL_MS / 1000);
+                    // ** [优化] 等待信息是非关键的，降级为 DEBUG **
+                    log.debug("  -> [线程 {}] 等待 {} 秒以确保服务器处理...", threadInfo, (double) BAND_ALBUM_INTERVAL_MS / 1000);
                     Thread.sleep(BAND_ALBUM_INTERVAL_MS);
                 }
             }
@@ -216,7 +217,7 @@ public class BaiduPhotoUploader {
             log.error("!!! [线程 {}] 处理相册 '{}' 的文件时失败:", threadInfo, albumTitle, e);
         } finally {
             taskResults.add(new UploadTaskResult(albumTitle, totalFiles, successCount));
-            log.info("\n====== [线程 {}] 相册 '{}' 处理完毕！成功上传: {} / {} ======", threadInfo, albumTitle, successCount, totalFiles);
+            log.info("====== [线程 {}] 相册 '{}' 处理完毕！成功上传: {} / {} ======", threadInfo, albumTitle, successCount, totalFiles);
         }
     }
 
@@ -224,26 +225,30 @@ public class BaiduPhotoUploader {
         String remotePath = "/" + file.getName();
         long fsid;
         String threadInfo = Thread.currentThread().getId() + "_" + Thread.currentThread().getName();
-        log.info("  [{}] [1/3] 正在预创建...", threadInfo);
+
+        // ** [优化] 单个文件上传的内部步骤全部降级为 DEBUG **
+        log.debug("  [{}] [1/3] 正在预创建...", threadInfo);
         PrecreateResponse precreateResponse = apiClient.precreate(file, remotePath, albumId);
 
         if (precreateResponse.isSecondPass() || (precreateResponse.getErrno() == 0 && precreateResponse.getFsId() != null)) {
             fsid = precreateResponse.getFsId();
+            // ** [优化] 秒传成功是一个重要的、简洁的结果，可以保留为 INFO **
             log.info("  -> [{}] 文件已存在 (秒传成功)! FSID: {}", threadInfo, fsid);
         } else if (precreateResponse.isUploadNeeded()) {
             String uploadId = precreateResponse.getUploadid();
-            log.info("  -> [{}] 获取到 UploadID: {}", threadInfo, uploadId);
+            log.debug("  -> [{}] 获取到 UploadID: {}", threadInfo, uploadId);
 
-            log.info("  -> [{}] [2/3] 正在上传文件数据...", threadInfo);
+            log.debug("  -> [{}] [2/3] 正在上传文件数据...", threadInfo);
             apiClient.uploadPart(file, remotePath, uploadId);
-            log.info("  -> [{}] 文件数据上传完成。", threadInfo);
+            log.debug("  -> [{}] 文件数据上传完成。", threadInfo);
 
-            log.info("  -> [{}] [3/3] 正在创建文件记录...", threadInfo);
+            log.debug("  -> [{}] [3/3] 正在创建文件记录...", threadInfo);
             CreateResponse createResponse = apiClient.createFile(file, remotePath, uploadId, albumId);
             if (createResponse.getErrno() != 0 || createResponse.getData() == null) {
                 throw new IOException("创建文件记录失败，错误码: " + createResponse.getErrno());
             }
             fsid = createResponse.getData().getFsid();
+            // ** [优化] 创建成功是重要结果，保留为 INFO **
             log.info("  -> [{}] 文件记录创建成功! FSID: {}", threadInfo, fsid);
         } else {
             throw new IOException("预创建失败，错误码: " + precreateResponse.getErrno());
@@ -258,14 +263,16 @@ public class BaiduPhotoUploader {
             java.nio.file.Path sourcePath = folder.toPath();
             java.nio.file.Path destPath = new File(folder.getParent(), "[Finished] " + folder.getName()).toPath();
             Files.move(sourcePath, destPath, StandardCopyOption.REPLACE_EXISTING);
-            log.info("  -> [线程 {}] 已成功将文件夹重命名为: {}", threadInfo, destPath.getFileName());
+            // ** [优化] 重命名成功是预料之中的事，降级为 DEBUG **
+            log.debug("  -> [线程 {}] 已成功将文件夹重命名为: {}", threadInfo, destPath.getFileName());
         } catch (IOException e) {
             log.error("!!! [线程 {}] 重命名文件夹 {} 失败: {}", threadInfo, folder.getName(), e.getMessage());
         }
     }
 
     private void printSummaryReport() {
-        log.info("\n\n==========================================================================");
+        // ... 摘要报告是最终的关键信息，全部保留为 INFO 级别 ...
+        log.info("==========================================================================");
         log.info("=======================   U P L O A D   S U M M A R Y   =======================");
         log.info("==========================================================================");
 
@@ -279,14 +286,14 @@ public class BaiduPhotoUploader {
         long totalFailed = taskResults.stream().filter(r -> "FAILED".equals(r.status)).count();
         long totalSkipped = taskResults.stream().filter(r -> r.status.startsWith("SKIPPED")).count();
 
-        log.info("\n[总体统计]");
+        log.info("[总体统计]");
         log.info("  - 处理文件夹总数: {}", taskResults.size());
         log.info("  - 完全成功: {}", totalSuccess);
         log.info("  - 部分成功: {}", totalPartial);
         log.info("  - 失败: {}", totalFailed);
         log.info("  - 跳过 (空文件夹): {}", totalSkipped);
 
-        log.info("\n[详细情况]");
+        log.info("[详细情况]");
         for (UploadTaskResult result : taskResults) {
             log.info(result.toString());
         }

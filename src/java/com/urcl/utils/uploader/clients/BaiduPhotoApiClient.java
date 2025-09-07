@@ -9,6 +9,8 @@ import com.urcl.utils.uploader.model.CreateResponse;
 import com.urcl.utils.uploader.model.PrecreateResponse;
 import com.urcl.utils.uploader.utils.Utils;
 import okhttp3.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory; // 导入 SLF4J 的类
 
 import java.io.File;
 import java.io.IOException;
@@ -20,6 +22,9 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 public class BaiduPhotoApiClient {
+
+    // ** [新增] 创建一个私有的、静态的 Logger 实例 **
+    private static final Logger log = LoggerFactory.getLogger(BaiduPhotoApiClient.class);
 
     private final OkHttpClient httpClient;
     private final Gson gson;
@@ -57,16 +62,16 @@ public class BaiduPhotoApiClient {
                 .addQueryParameter("tid", String.valueOf(System.currentTimeMillis()))
                 .build();
 
-        // 创建相册时的Referer是相册主列表
         Request request = buildRequest(url, null, "https://photo.baidu.com/photo/web/album");
 
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful()) throw new IOException("创建相册请求失败: " + response);
             String responseBody = Objects.requireNonNull(response.body()).string();
-            System.out.println("  -> Create Album 响应: " + responseBody);
+            // ** [优化] 将API响应日志降级为 DEBUG **
+            log.debug("Create Album API response: {}", responseBody);
             CreateAlbumResponse createAlbumResponse = gson.fromJson(responseBody, CreateAlbumResponse.class);
             if (createAlbumResponse.getErrno() != 0) {
-                throw new IOException("创建相册API错误, errno: " + createAlbumResponse.getErrno());
+                throw new IOException("创建相册API错误, errno: " + createAlbumResponse.getErrno() + ", response: " + responseBody);
             }
             return createAlbumResponse;
         }
@@ -102,13 +107,13 @@ public class BaiduPhotoApiClient {
                 .addQueryParameter("bdstoken", this.bdstoken)
                 .build();
 
-        // Referer需要带上当前操作的相册ID
         Request request = buildRequest(url, formBody, "https://photo.baidu.com/photo/web/album/" + albumId);
 
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful()) throw new IOException("预创建请求失败: " + response);
             String responseBody = Objects.requireNonNull(response.body()).string();
-            System.out.println("  -> Precreate 响应: " + responseBody);
+            // ** [优化] 将API响应日志降级为 DEBUG **
+            log.debug("Precreate API response: {}", responseBody);
             return gson.fromJson(responseBody, PrecreateResponse.class);
         }
     }
@@ -132,13 +137,14 @@ public class BaiduPhotoApiClient {
                 .post(multipartBody)
                 .addHeader("Cookie", this.cookie)
                 .addHeader("User-Agent", "\"Not;A=Brand\";v=\"99\", \"Microsoft Edge\";v=\"139\", \"Chromium\";v=\"139\"")
-                .addHeader("Referer", "https://photo.baidu.com/") // 这个Referer是固定的
+                .addHeader("Referer", "https://photo.baidu.com/")
                 .build();
 
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful()) throw new IOException("文件上传失败: " + response);
             String responseBody = Objects.requireNonNull(response.body()).string();
-            System.out.println("  -> Upload Part 响应: " + responseBody);
+            // ** [优化] 将API响应日志降级为 DEBUG **
+            log.debug("Upload Part API response: {}", responseBody);
         }
     }
 
@@ -174,16 +180,14 @@ public class BaiduPhotoApiClient {
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful()) throw new IOException("创建文件请求失败: " + response);
             String responseBody = Objects.requireNonNull(response.body()).string();
-            System.out.println("  -> Create File 响应: " + responseBody);
+            // ** [优化] 将API响应日志降级为 DEBUG **
+            log.debug("Create File API response: {}", responseBody);
             return gson.fromJson(responseBody, CreateResponse.class);
         }
     }
 
     /**
      * 步骤 4: 将一批文件批量添加到相册
-     * @param albumId 目标相册ID
-     * @param fsids   要添加的文件的fsid列表
-     * @param tid     有效的事务ID
      */
     public void addFilesToAlbum(String albumId, List<Long> fsids, String tid) throws IOException {
         if (fsids == null || fsids.isEmpty()) {
@@ -210,20 +214,17 @@ public class BaiduPhotoApiClient {
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful()) throw new IOException("添加文件到相册失败: " + response);
             String responseBody = Objects.requireNonNull(response.body()).string();
-            System.out.println("  -> Add to Album 响应: " + responseBody);
+            // ** [优化] 将API响应日志降级为 DEBUG **
+            log.debug("Add to Album API response: {}", responseBody);
             AddFileResponse addFileResponse = gson.fromJson(responseBody, AddFileResponse.class);
             if (addFileResponse.getErrno() != 0) {
-                throw new IOException("添加文件到相册API错误, errno: " + addFileResponse.getErrno());
+                throw new IOException("添加文件到相册API错误, errno: " + addFileResponse.getErrno() + ", response: " + responseBody);
             }
         }
     }
 
     /**
      * 辅助方法，用于构建通用的请求
-     * @param url 请求的URL
-     * @param body 请求体 (GET请求时为null)
-     * @param referer HTTP Referer头
-     * @return 构建好的Request对象
      */
     private Request buildRequest(HttpUrl url, RequestBody body, String referer) {
         Request.Builder builder = new Request.Builder()

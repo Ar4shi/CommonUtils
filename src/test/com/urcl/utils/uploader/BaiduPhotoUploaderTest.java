@@ -7,7 +7,7 @@ public class BaiduPhotoUploaderTest {
     // ====================================================================================
     // =============================  请在这里填写您的配置  ===============================
     // ====================================================================================
-    private static final String ROOT_FOLDER_PATH = "D:\\Edge下载\\collection\\BrightSky";
+    private static final String ROOT_FOLDER_PATH = "D:\\Edge下载\\collection\\UnityNya";
 
     // 2. bdstoken: 从您提供的请求URL中可以找到。
     private static final String BDSTOKEN = "a05b9e7c034c6a3f759c5f8f8509c523";
