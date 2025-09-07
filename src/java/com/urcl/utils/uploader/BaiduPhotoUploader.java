@@ -21,15 +21,20 @@ import java.util.stream.Collectors;
 
 public class BaiduPhotoUploader {
 
-    // [可配置] 一次并行上传多少个文件夹的图片
+    // [可配置] 一次并行处理多少个文件夹（相册）
     private static final int BATCH_SIZE = 5;
 
-    // [可配置] 设置创建每个相册之间的间隔时间（毫秒），2秒是一个比较安全的值
+    // [可配置] 设置创建每个相册之间的间隔时间（毫秒）
     private static final int CREATE_ALBUM_INTERVAL_MS = 500;
-    /**
-     * 文件上传间隔
-     */
-    public static final int UPDATE_FILE_INTERVAL_MS = 10;
+    
+    // [可配置] 设置每个文件上传的间隔时间（毫秒）
+    public static final int UPLOAD_FILE_INTERVAL_MS = 10;
+
+    // [可配置] 设置绑定每个相册之间的最小间隔时间（毫秒）
+    public static final int BAND_ALBUM_INTERVAL_MS = 5000;
+
+    // 所有的线程在执行“添加到相册”操作前都必须先获得这个锁。
+    private static final Object ALBUM_ADD_LOCK = new Object();
 
     public void batchUpload(String root_folder_path, String bdstoken, String cookie) {
         File rootFolder = new File(root_folder_path);
@@ -39,7 +44,6 @@ public class BaiduPhotoUploader {
         }
 
         File[] subFolders = rootFolder.listFiles(f -> f.isDirectory() && !f.getName().startsWith("[Finished]"));
-
         if (subFolders == null || subFolders.length == 0) {
             System.out.println("在根目录中没有找到需要处理的子文件夹。");
             return;
@@ -48,9 +52,7 @@ public class BaiduPhotoUploader {
         List<File> subFolderList = Arrays.asList(subFolders);
         System.out.println("发现 " + subFolderList.size() + " 个待处理文件夹，将以每批 " + BATCH_SIZE + " 个进行处理...");
 
-        // apiClient 仅用于串行创建相册
         BaiduPhotoApiClient mainApiClient = new BaiduPhotoApiClient(cookie, bdstoken);
-        // 线程池用于并行的文件上传任务
         ExecutorService executor = Executors.newFixedThreadPool(BATCH_SIZE);
 
         for (int i = 0; i < subFolderList.size(); i += BATCH_SIZE) {
@@ -59,9 +61,6 @@ public class BaiduPhotoUploader {
             System.out.printf("\n======================= 开始处理批次 %d / %d =======================\n",
                     (i / BATCH_SIZE + 1), (int) Math.ceil((double) subFolderList.size() / BATCH_SIZE));
 
-            // =======================================================================
-            // 步骤 1: 【串行】创建当前批次的所有相册，并设置间隔
-            // =======================================================================
             System.out.println("\n======== [批次 " + (i / BATCH_SIZE + 1) + "] 步骤 1: 串行创建相册 ========");
             List<AlbumInfo> createdAlbums = new ArrayList<>();
             for (File folder : batch) {
@@ -93,9 +92,6 @@ public class BaiduPhotoUploader {
                 continue;
             }
 
-            // =======================================================================
-            // 步骤 2: 【并行】将文件上传任务提交到线程池
-            // =======================================================================
             System.out.println("\n======== [批次 " + (i / BATCH_SIZE + 1) + "] 步骤 2: 并行上传文件到已创建的相册中 ========");
             List<CompletableFuture<Void>> uploadFutures = createdAlbums.stream()
                     .map(albumInfo -> CompletableFuture.runAsync(() -> {
@@ -142,13 +138,21 @@ public class BaiduPhotoUploader {
                 } catch (Exception e) {
                     System.err.printf("!!! [线程 %d] 上传文件 %s 失败: %s\n", threadId, file.getName(), e.getMessage());
                 }
-                Thread.sleep(UPDATE_FILE_INTERVAL_MS); // 文件间短暂停顿
+                Thread.sleep(UPLOAD_FILE_INTERVAL_MS); // 文件间短暂停顿
             }
 
             if (!uploadedFsids.isEmpty()) {
-                System.out.printf("\n>>> [线程 %d] 所有文件上传完成，正在将 %d 个文件批量添加到相册...\n", threadId, uploadedFsids.size());
-                apiClient.addFilesToAlbum(albumInfo.getAlbumId(), uploadedFsids, albumInfo.getTid());
-                System.out.printf("  -> [线程 %d] 批量添加成功!\n", threadId);
+                System.out.printf("\n>>> [线程 %d] 所有文件上传完成，准备将 %d 个文件批量添加到相册...\n", threadId, uploadedFsids.size());
+                
+                synchronized (ALBUM_ADD_LOCK) {
+                    System.out.printf(">>> [线程 %d] 获取到同步锁，正在添加到相册...\n", threadId);
+                    apiClient.addFilesToAlbum(albumInfo.getAlbumId(), uploadedFsids, albumInfo.getTid());
+                    System.out.printf("  -> [线程 %d] 批量添加成功! 释放同步锁。\n", threadId);
+
+                    // 在释放锁之前，可以额外增加一个短暂的强制间隔，让服务器有喘息之机
+                    Thread.sleep(BAND_ALBUM_INTERVAL_MS);
+                }
+                // ------------------------------------------------------------------
             }
 
             renameFolderToFinished(albumInfo.getFolder());
@@ -175,11 +179,11 @@ public class BaiduPhotoUploader {
             String uploadId = precreateResponse.getUploadid();
             System.out.printf("  -> [%d] 获取到 UploadID: %s\n", threadId, uploadId);
 
-            System.out.printf("  [%d] [2/3] 正在上传文件数据...\n", threadId);
+            System.out.printf("  -> [%d] [2/3] 正在上传文件数据...\n", threadId);
             apiClient.uploadPart(file, remotePath, uploadId);
             System.out.printf("  -> [%d] 文件数据上传完成。\n", threadId);
 
-            System.out.printf("  [%d] [3/3] 正在创建文件记录...\n", threadId);
+            System.out.printf("  -> [%d] [3/3] 正在创建文件记录...\n", threadId);
             CreateResponse createResponse = apiClient.createFile(file, remotePath, uploadId, albumId);
             if (createResponse.getErrno() != 0 || createResponse.getData() == null) {
                 throw new IOException("创建文件记录失败，错误码: " + createResponse.getErrno());
@@ -197,10 +201,7 @@ public class BaiduPhotoUploader {
 
     private void renameFolderToFinished(File folder) {
         try {
-            if (folder.getName().startsWith("[Finished]")) {
-                return;
-            }
-            // 使用 java.nio.file.Path 来处理路径，更健壮
+            if (folder.getName().startsWith("[Finished]")) return;
             java.nio.file.Path sourcePath = folder.toPath();
             java.nio.file.Path destPath = new File(folder.getParent(), "[Finished] " + folder.getName()).toPath();
             Files.move(sourcePath, destPath, StandardCopyOption.REPLACE_EXISTING);
